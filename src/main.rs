@@ -799,13 +799,16 @@ fn main() -> Result<()> {
         "dn", "mn", "sn", "an", "kp", "dhp", "ud", "iti", "ja", "cp", "thig", "thag", "snp",
     ];
 
-    let conn = Connection::open(sqlitedb_path)?;
+    let _ = std::fs::remove_file(&sqlitedb_path);
+    let conn = Connection::open(&sqlitedb_path)?;
 
     for i in TABLES_LIST {
         let i = i.replace("/", "_").replace("-", "_");
-        conn.execute(&format!("DROP TABLE IF EXISTS {i}"), ())?;
         conn.execute(
-            &format!("CREATE TABLE {i} (uid TEXT NOT NULL PRIMARY KEY, contents TEXT NOT NULL)"),
+            &format!(
+                "CREATE TABLE {i} (uid TEXT NOT NULL PRIMARY KEY,
+                     contents TEXT NOT NULL UNIQUE)"
+            ),
             (),
         )?;
     }
