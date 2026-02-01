@@ -6,10 +6,7 @@ use std::fs::File;
 use std::io::Write;
 
 use rusqlite::{Connection, Result};
-
-mod tables;
 use serde::Serialize;
-use tables::TABLES_LIST;
 
 // "an1.1-10" is considered as SectionRange(1,10)
 // "sn1.55" is considered as Section(55)
@@ -497,13 +494,7 @@ fn generate_page(
             return Err(uid.clone());
         }
 
-        let table_name = out_subdir_path;
-        if !TABLES_LIST.contains(&table_name.as_str()) {
-            panic!("Unknown table: {}", table_name)
-        }
-        let table_name = table_name.replace("/", "_").replace("-", "_");
-
-        write_contents(&file, conn, &table_name, uid, &file_path);
+        write_contents(&file, conn, uid, &file_path);
 
         Ok(uid.clone())
     } else {
@@ -610,13 +601,7 @@ fn sort_func(x: &str, y: &str) -> std::cmp::Ordering {
 }
 
 // Writes the sutta text to the file
-fn write_contents(
-    mut file: &std::fs::File,
-    conn: &Connection,
-    table_name: &str,
-    uid: &str,
-    input_filename: &String,
-) {
+fn write_contents(mut file: &std::fs::File, conn: &Connection, uid: &str, input_filename: &String) {
     let file_contents = fs::read_to_string(input_filename)
         .unwrap_or_else(|_| panic!("File not found: {input_filename}"));
     let json_obj: serde_json::Value = serde_json::from_str(&file_contents).expect("json parse err");
@@ -717,11 +702,8 @@ fn write_contents(
         }
     }
 
-    conn.execute(
-        &format!("INSERT INTO {} VALUES(?1,?2)", table_name),
-        (uid, all_lines),
-    )
-    .expect("SQL error");
+    conn.execute("INSERT INTO sutta VALUES(?1,?2)", (uid, all_lines))
+        .expect("SQL error");
 }
 fn generate_markdown(
     conn: &Connection,
@@ -806,16 +788,9 @@ fn main() -> Result<()> {
     let _ = std::fs::remove_file(&sqlitedb_path);
     let conn = Connection::open(&sqlitedb_path)?;
 
-    for i in TABLES_LIST {
-        let i = i.replace("/", "_").replace("-", "_");
-        conn.execute(
-            &format!(
-                "CREATE TABLE {i} (uid TEXT NOT NULL PRIMARY KEY,
-                     contents TEXT NOT NULL UNIQUE)"
-            ),
-            (),
-        )?;
-    }
+    const CREATE_QUERY: &str =
+        "CREATE TABLE sutta (uid TEXT NOT NULL PRIMARY KEY, contents TEXT NOT NULL UNIQUE)";
+    conn.execute(CREATE_QUERY, ())?;
 
     let timer = std::time::Instant::now();
     let uid_expansion = read_uid_expansion(&dir_path);
