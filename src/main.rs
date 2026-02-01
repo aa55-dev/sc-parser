@@ -8,11 +8,12 @@ use std::io::Write;
 use rusqlite::{Connection, Result};
 
 mod tables;
+use serde::Serialize;
 use tables::TABLES_LIST;
 
 // "an1.1-10" is considered as SectionRange(1,10)
 // "sn1.55" is considered as Section(55)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 enum Section {
     Section(u32),
     SectionRange(u32, u32),
@@ -28,9 +29,10 @@ impl fmt::Display for Section {
 }
 
 // For "sn1.55" 1 is considered as the discourse and 55 as segment
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct Sutta {
     discourse: Option<u32>,
+    #[serde(skip)]
     section: Option<Section>,
 }
 
@@ -67,13 +69,14 @@ impl Ord for Sutta {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct Node {
     uid: String,
     sutta: Sutta,
     children: Vec<usize>,
 }
 
+#[derive(Serialize)]
 struct Tree {
     arena: Vec<Node>,
 }
@@ -82,7 +85,7 @@ impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} {} C({}):{}",
+            "UID: {}, sutta:{}, Children({}):{}",
             self.uid,
             self.sutta,
             self.children.len(),
@@ -350,6 +353,7 @@ fn read_uid_expansion(base_dir: &str) -> HashMap<String, String> {
 }
 
 const IO_ERROR: &str = "IO err";
+const JSON_ERROR: &str = "JSON err";
 const LINES: &str = "---";
 
 // This will generate the markdown files
@@ -782,7 +786,7 @@ fn get_node_blurbs(
 }
 
 fn print_usage_and_exit(args: &[String]) {
-    println!("Usage: {} SC_DATA_DIR DEST_DIR SQLITE_FILE", args[0]);
+    println!("Usage: {} SC_DATA_DIR JEKYLL_DIR APP_DIR", args[0]);
     std::process::exit(1);
 }
 
@@ -792,8 +796,8 @@ fn main() -> Result<()> {
         print_usage_and_exit(&args);
     }
     let dir_path = args[1].clone();
-    let output_path = args[2].clone();
-    let sqlitedb_path = args[3].clone();
+    let jekyll_path = args[2].clone();
+    let sqlitedb_path = args[3].clone() + "db.sqlite3";
 
     let sutta_list: [&str; 13] = [
         "dn", "mn", "sn", "an", "kp", "dhp", "ud", "iti", "ja", "cp", "thig", "thag", "snp",
@@ -814,6 +818,7 @@ fn main() -> Result<()> {
     }
 
     let timer = std::time::Instant::now();
+    let uid_expansion = read_uid_expansion(&dir_path);
 
     for i in sutta_list {
         let tree_path = format!("structure/tree/sutta/{i}-tree.json");
@@ -832,7 +837,14 @@ fn main() -> Result<()> {
 
         let node_blurbs = get_node_blurbs(&contents_en_translations, &contents_pli_text);
         let tree = build_structure_tree(&contents_tree);
-        let uid_expansion = read_uid_expansion(&dir_path);
+
+        let struct_path = format!("{}/{}_struct.json", args[3].clone(), i);
+        let struct_file = fs::File::create(struct_path).expect(IO_ERROR);
+        serde_json::to_writer(struct_file, &tree).expect(JSON_ERROR);
+
+        let blurbs_path = format!("{}/{}_blurbs.json", args[3].clone(), i);
+        let blurbs_file = fs::File::create(blurbs_path).expect(IO_ERROR);
+        serde_json::to_writer(blurbs_file, &node_blurbs).expect(JSON_ERROR);
 
         generate_markdown(
             &conn,
@@ -840,11 +852,16 @@ fn main() -> Result<()> {
             &uid_expansion,
             &node_blurbs,
             &dir_path,
-            &output_path,
+            &jekyll_path,
             i,
         )
         .expect("Markdown generation failed");
     }
+
+    let uid_expansion_path = format!("{}/uid_expansion.json", args[3].clone());
+    let uid_expansion_file = fs::File::create(uid_expansion_path).expect(IO_ERROR);
+    serde_json::to_writer(uid_expansion_file, &uid_expansion).expect(JSON_ERROR);
+
     println!("Completed in: {:.3?}", timer.elapsed());
     Ok(())
 }
