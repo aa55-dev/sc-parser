@@ -5,6 +5,11 @@ use std::fs;
 use std::fs::File;
 use std::io::Write;
 
+use rusqlite::{Connection, Result};
+
+mod tables;
+use tables::TABLES_LIST;
+
 // "an1.1-10" is considered as SectionRange(1,10)
 // "sn1.55" is considered as Section(55)
 #[derive(Debug, Clone)]
@@ -350,6 +355,7 @@ const LINES: &str = "---";
 // This will generate the markdown files
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn generate_page(
+    conn: &Connection,
     tree: &Tree,
     tree_idx: usize,
     uid_expansion: &HashMap<String, String>,
@@ -487,7 +493,13 @@ fn generate_page(
             return Err(uid.clone());
         }
 
-        write_contents(&file, &file_path);
+        let table_name = out_subdir_path;
+        if !TABLES_LIST.contains(&table_name.as_str()) {
+            panic!("Unknown table: {}", table_name)
+        }
+        let table_name = table_name.replace("/", "_").replace("-", "_");
+
+        write_contents(&file, conn, &table_name, uid, &file_path);
 
         Ok(uid.clone())
     } else {
@@ -514,6 +526,7 @@ fn generate_page(
         let mut children_count = 0;
         for child in &current_node.children {
             let child_permalink = generate_page(
+                conn,
                 tree,
                 *child,
                 uid_expansion,
@@ -593,11 +606,18 @@ fn sort_func(x: &str, y: &str) -> std::cmp::Ordering {
 }
 
 // Writes the sutta text to the file
-fn write_contents(mut file: &std::fs::File, input_filename: &String) {
+fn write_contents(
+    mut file: &std::fs::File,
+    conn: &Connection,
+    table_name: &str,
+    uid: &str,
+    input_filename: &String,
+) {
     let file_contents = fs::read_to_string(input_filename)
         .unwrap_or_else(|_| panic!("File not found: {input_filename}"));
     let json_obj: serde_json::Value = serde_json::from_str(&file_contents).expect("json parse err");
 
+    let mut all_lines = String::new();
     if let Some(i) = json_obj.as_object() {
         let mut x = i.keys().collect::<Vec<&String>>().clone();
         // Even though the lines are in the correct order, while JSON parsing we lose the order
@@ -673,6 +693,11 @@ fn write_contents(mut file: &std::fs::File, input_filename: &String) {
                 writeln!(file).expect(IO_ERROR);
                 prev_section = current_section;
             }
+
+            if !line_to_write.is_empty() {
+                all_lines.push_str(&line_to_write);
+                all_lines.push_str("\n");
+            }
             // Add two newlines at end to add a linebreak in the output
             writeln!(file, "{prefix}{line_to_write}{suffix}  ").expect(IO_ERROR);
 
@@ -687,8 +712,15 @@ fn write_contents(mut file: &std::fs::File, input_filename: &String) {
             }
         }
     }
+
+    conn.execute(
+        &format!("INSERT INTO {} VALUES(?1,?2)", table_name),
+        (uid, all_lines),
+    )
+    .expect("SQL error");
 }
 fn generate_markdown(
+    conn: &Connection,
     tree: &Tree,
     uid_expansion: &HashMap<String, String>,
     node_blurbs: &HashMap<String, (String, String)>,
@@ -699,6 +731,7 @@ fn generate_markdown(
     fs::create_dir_all(out_path.to_string() + "sutta").expect("io fail");
     let mut counter: u32 = 0;
     let result = generate_page(
+        conn,
         tree,
         tree.arena.len() - 1,
         uid_expansion,
@@ -710,7 +743,6 @@ fn generate_markdown(
         &mut counter,
         0,
     );
-    println!("{root_uid} {counter}");
     result
 }
 
@@ -750,21 +782,33 @@ fn get_node_blurbs(
 }
 
 fn print_usage_and_exit(args: &[String]) {
-    println!("Usage: {} SC_DATA_DIR DEST_DIR", args[0]);
+    println!("Usage: {} SC_DATA_DIR DEST_DIR SQLITE_FILE", args[0]);
     std::process::exit(1);
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
+    if args.len() != 4 {
         print_usage_and_exit(&args);
     }
     let dir_path = args[1].clone();
     let output_path = args[2].clone();
+    let sqlitedb_path = args[3].clone();
 
     let sutta_list: [&str; 13] = [
         "dn", "mn", "sn", "an", "kp", "dhp", "ud", "iti", "ja", "cp", "thig", "thag", "snp",
     ];
+
+    let conn = Connection::open(sqlitedb_path)?;
+
+    for i in TABLES_LIST {
+        let i = i.replace("/", "_").replace("-", "_");
+        conn.execute(&format!("DROP TABLE IF EXISTS {i}"), ())?;
+        conn.execute(
+            &format!("CREATE TABLE {i} (uid TEXT NOT NULL PRIMARY KEY, contents TEXT NOT NULL)"),
+            (),
+        )?;
+    }
 
     let timer = std::time::Instant::now();
 
@@ -776,20 +820,19 @@ fn main() {
         let pli_text =
             format!("sc_bilara_data/root/misc/site/name/sutta/{i}-name_root-misc-site.json");
 
-        let contents_tree =
-            fs::read_to_string(dir_path.clone() + &tree_path).expect(IO_ERROR);
+        let contents_tree = fs::read_to_string(dir_path.clone() + &tree_path).expect(IO_ERROR);
 
         let contents_en_translations =
             fs::read_to_string(dir_path.clone() + &en_translations).expect(IO_ERROR);
 
-        let contents_pli_text =
-            fs::read_to_string(dir_path.clone() + &pli_text).expect(IO_ERROR);
+        let contents_pli_text = fs::read_to_string(dir_path.clone() + &pli_text).expect(IO_ERROR);
 
         let node_blurbs = get_node_blurbs(&contents_en_translations, &contents_pli_text);
         let tree = build_structure_tree(&contents_tree);
         let uid_expansion = read_uid_expansion(&dir_path);
 
         generate_markdown(
+            &conn,
             &tree,
             &uid_expansion,
             &node_blurbs,
@@ -800,4 +843,5 @@ fn main() {
         .expect("Markdown generation failed");
     }
     println!("Completed in: {:.3?}", timer.elapsed());
+    Ok(())
 }
