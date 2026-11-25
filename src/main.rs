@@ -702,8 +702,13 @@ fn write_contents(mut file: &std::fs::File, conn: &Connection, uid: &str, input_
         }
     }
 
-    conn.execute("INSERT INTO sutta VALUES(?1,?2)", (uid, all_lines))
+    conn.execute("INSERT INTO sutta VALUES(?1, ?2)", (uid, &all_lines))
         .expect("SQL error");
+    conn.execute(
+        "INSERT INTO sutta_fts (rowid, contents) VALUES(?1, ?2)",
+        (conn.last_insert_rowid(), &all_lines),
+    )
+    .expect("FTS insert failed");
 }
 fn generate_markdown(
     conn: &Connection,
@@ -789,8 +794,14 @@ fn main() -> Result<()> {
     let conn = Connection::open(&sqlitedb_path)?;
 
     const CREATE_QUERY: &str =
-        "CREATE TABLE sutta (uid TEXT NOT NULL PRIMARY KEY, contents TEXT NOT NULL UNIQUE)";
+        "CREATE TABLE sutta (uid TEXT NOT NULL PRIMARY KEY, contents TEXT NOT NULL)";
     conn.execute(CREATE_QUERY, ())?;
+
+    const CREATE_FTS_QUERY: &str = "CREATE VIRTUAL TABLE sutta_fts USING fts5(
+        contents,
+        content='',
+        tokenize='unicode61 remove_diacritics 2')";
+    conn.execute(CREATE_FTS_QUERY, ())?;
 
     let timer = std::time::Instant::now();
     let uid_expansion = read_uid_expansion(&dir_path);
@@ -836,6 +847,8 @@ fn main() -> Result<()> {
     let uid_expansion_path = format!("{}/uid_expansion.json", args[3].clone());
     let uid_expansion_file = fs::File::create(uid_expansion_path).expect(IO_ERROR);
     serde_json::to_writer(uid_expansion_file, &uid_expansion).expect(JSON_ERROR);
+
+    conn.execute("INSERT INTO sutta_fts(sutta_fts) VALUES('optimize')", ())?;
 
     println!("Completed in: {:.3?}", timer.elapsed());
     Ok(())
