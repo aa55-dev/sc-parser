@@ -600,6 +600,23 @@ fn sort_func(x: &str, y: &str) -> std::cmp::Ordering {
     parts_x.cmp(&parts_y)
 }
 
+fn strip_html_tags(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut inside_tag = false;
+
+    for ch in input.chars() {
+        if ch == '<' {
+            inside_tag = true;
+        } else if ch == '>' {
+            inside_tag = false;
+        } else if !inside_tag {
+            result.push(ch);
+        }
+    }
+
+    return result;
+}
+
 // Writes the sutta text to the file
 fn write_contents(mut file: &std::fs::File, conn: &Connection, uid: &str, input_filename: &String) {
     let file_contents = fs::read_to_string(input_filename)
@@ -625,9 +642,8 @@ fn write_contents(mut file: &std::fs::File, conn: &Connection, uid: &str, input_
             let parts = split_uid_to_parts(key);
             let parts_len = parts.len();
 
-            // Remove the <j> tag
-            // https://discourse.suttacentral.net/t/what-is-the-j-tag/
-            let line_to_write = i[key].as_str().unwrap().replace("<j>", "");
+            // Remove any html tags
+            let line_to_write = strip_html_tags(i[key].as_str().unwrap());
             let mut line_to_write = line_to_write.trim_end().to_string();
 
             // In some cases, we have a opening "”" but not a closing one,
